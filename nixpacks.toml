@@ -1,7 +1,0 @@
-[phases.setup]
-nixPkgs = ["audiowmark", "ffmpeg"]
-
-[start]
-cmd = "node server.js"
-
-
