@@ -71,7 +71,7 @@ app.get('/health', (req, res) => {
 });
 
 app.get('/audiowmark-test', (req, res) => {
-  exec('audiowmark --version', (err, stdout, stderr) => {
+  exec('/app/audiowmark-linux --version', (err, stdout, stderr) => {
     res.json({
       available: !err,
       output: stdout || stderr || String(err)
