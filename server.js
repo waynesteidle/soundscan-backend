@@ -123,6 +123,16 @@ app.get('/lookup/:code', (req, res) => {
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
+app.get('/audiowmark-test', (req, res) => {
+  const { exec } = require('child_process');
+  exec('audiowmark --version', (err, stdout, stderr) => {
+    res.json({
+      available: !err,
+      output: stdout || stderr || String(err)
+    });
+  });
+});
+```
 
 // ── Start server ──────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
