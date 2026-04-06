@@ -122,7 +122,7 @@ app.post('/detect', upload.single('audio'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No audio file uploaded' });
 
   const input = req.file.path;
-  const cmd = 'python3 ' + WM + ' detect ' + input;
+  const cmd = 'python3 ' + WM + ' detect_any_sr ' + input;
 
   exec(cmd, async (err, stdout, stderr) => {
     try { fs.unlinkSync(input); } catch {}

@@ -164,6 +164,14 @@ if __name__ == '__main__':
         watermark_file(inp, out, code)
         print(f"Watermarked: {out}")
 
+    elif cmd == 'detect_any_sr':
+        inp = sys.argv[2]
+        code, conf = detect_file_any_sr(inp)
+        if code:
+            print(f'Detected: {code} (confidence={conf:.3f})')
+        else:
+            print(f'Nothing detected (confidence={conf:.3f})')
+
     elif cmd == 'detect':
         inp = sys.argv[2]
         code, conf = detect_file(inp)
@@ -171,3 +179,24 @@ if __name__ == '__main__':
             print(f"Detected: {code} (confidence={conf:.3f})")
         else:
             print(f"Nothing detected (confidence={conf:.3f})")
+
+
+def detect_file_any_sr(input_wav: str):
+    """Detect code from WAV file at any sample rate - resamples to 44100Hz."""
+    from scipy.signal import resample_poly
+    from math import gcd
+    sr, data = wavfile.read(input_wav)
+    audio = (data[:, 0] if data.ndim == 2 else data).astype(np.float64)
+    
+    # Normalize
+    if audio.dtype == np.int16 or np.max(np.abs(audio)) > 1.0:
+        audio = audio / 32768.0
+    
+    # Resample to 44100Hz if needed
+    if sr != SR:
+        g = gcd(int(sr), SR)
+        up = SR // g
+        down = int(sr) // g
+        audio = resample_poly(audio, up, down)
+    
+    return detect(audio)
