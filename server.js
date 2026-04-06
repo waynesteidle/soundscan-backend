@@ -111,7 +111,7 @@ app.get('/watermark/:code', async (req, res) => {
   const output = path.join(TMP, 'wm_' + code + '.wav');
 
   // Embed watermark at strength 15 directly into optimized carrier
-  exec(AW + ' add --strength 15 ' + CARRIER + ' ' + output + ' ' + hex, (err, stdout, stderr) => {
+  exec(AW + ' add --strength 20 ' + CARRIER + ' ' + output + ' ' + hex, (err, stdout, stderr) => {
     if (err) return res.status(500).json({ error: 'Watermarking failed', detail: stderr });
 
     console.log('Watermark embedded for code ' + code);
