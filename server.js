@@ -9,8 +9,8 @@ const { Pool } = require('pg');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
-const AW   = '/app/audiowmark-linux';
 const TMP  = '/tmp';
+const WM   = path.join(__dirname, 'watermark.py');
 const CARRIER = path.join(__dirname, 'soundscan_carrier.wav');
 
 app.use(cors({ origin: '*', methods: ['GET', 'POST'], allowedHeaders: ['Content-Type'] }));
@@ -45,10 +45,6 @@ function isValidUrl(str) {
     const u = new URL(str);
     return u.protocol === 'http:' || u.protocol === 'https:';
   } catch { return false; }
-}
-
-function codeToHex(code) {
-  return crypto.createHash('sha256').update('soundscan:' + code).digest('hex').substring(0, 32);
 }
 
 app.post('/generate', async (req, res) => {
@@ -89,10 +85,10 @@ app.get('/lookup/:code', async (req, res) => {
   }
 });
 
-// Generate watermarked WAV using optimized carrier
-// Carrier: 30s broadband 4kHz-17kHz optimized for audiowmark
-// Watermark strength 15 gives +20dB SNR - highly detectable
-// Mix at -30dB = inaudible when commercial plays at normal volume
+// Generate watermarked WAV using custom SoundScan watermarker
+// Primary band 8-12kHz: survives ALL TV speakers
+// Secondary band 15-17kHz: sub-human on good TVs
+// Detects in 1 second from any point in the 30-second loop
 app.get('/watermark/:code', async (req, res) => {
   const { code } = req.params;
   if (!/^\d{9}$/.test(code)) return res.status(400).json({ error: 'Code must be 9 digits' });
@@ -104,19 +100,15 @@ app.get('/watermark/:code', async (req, res) => {
   }
 
   if (!fs.existsSync(CARRIER)) {
-    return res.status(500).json({ error: 'Carrier file not found on server' });
+    return res.status(500).json({ error: 'Carrier file not found' });
   }
 
-  const hex    = codeToHex(code);
   const output = path.join(TMP, 'wm_' + code + '.wav');
+  const cmd = 'python3 ' + WM + ' embed ' + CARRIER + ' ' + output + ' ' + code;
 
-  // Embed watermark at strength 15 directly into optimized carrier
-  exec(AW + ' add --strength 20 ' + CARRIER + ' ' + output + ' ' + hex, (err, stdout, stderr) => {
+  exec(cmd, (err, stdout, stderr) => {
     if (err) return res.status(500).json({ error: 'Watermarking failed', detail: stderr });
-
-    console.log('Watermark embedded for code ' + code);
-    console.log('Mix this WAV at -30dB under commercial audio for inaudible playback');
-
+    console.log('Watermarked code ' + code);
     res.setHeader('Content-Type', 'audio/wav');
     res.setHeader('Content-Disposition', 'attachment; filename="soundscan_' + code + '.wav"');
     const stream = fs.createReadStream(output);
@@ -130,37 +122,29 @@ app.post('/detect', upload.single('audio'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No audio file uploaded' });
 
   const input = req.file.path;
+  const cmd = 'python3 ' + WM + ' detect ' + input;
 
-  exec(AW + ' get ' + input, async (err, stdout, stderr) => {
+  exec(cmd, async (err, stdout, stderr) => {
     try { fs.unlinkSync(input); } catch {}
 
-    console.log('Detect output: ' + stdout.substring(0, 300));
+    console.log('Detect output: ' + stdout.trim());
 
-    const lines = stdout.split('\n');
-    let detected = null;
+    // Parse output: "Detected: 123456789 (confidence=0.987)"
+    const m = stdout.match(/Detected:\s*(\d{9})\s*\(confidence=([\d.]+)\)/);
 
-    try {
-      const allCodes = await pool.query('SELECT code FROM codes');
-      const codes = allCodes.rows.map(r => r.code);
-
-      for (const line of lines) {
-        const m = line.match(/^pattern\s+\S+\s+([0-9a-f]{32})/);
-        if (m) {
-          const hex = m[1];
-          if (hex === '00000000000000000000000000000000') continue;
-          for (const code of codes) {
-            if (codeToHex(code) === hex) { detected = code; break; }
-          }
-          if (detected) break;
+    if (m) {
+      const code = m[1];
+      const conf = parseFloat(m[2]);
+      try {
+        const row = await pool.query('SELECT code, url FROM codes WHERE code = $1', [code]);
+        if (row.rows.length > 0) {
+          res.json({ code, url: row.rows[0].url, confidence: conf });
+        } else {
+          res.status(404).json({ error: 'Code detected but not in database', code, confidence: conf });
         }
+      } catch (dbErr) {
+        res.status(500).json({ error: 'Database error' });
       }
-    } catch (dbErr) {
-      return res.status(500).json({ error: 'Database error' });
-    }
-
-    if (detected) {
-      const row = await pool.query('SELECT code, url FROM codes WHERE code = $1', [detected]);
-      res.json({ code: detected, url: row.rows[0].url });
     } else {
       res.status(404).json({ error: 'No watermark detected', raw: stdout });
     }
@@ -171,19 +155,14 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-app.get('/audiowmark-test', (req, res) => {
-  exec(AW + ' --version', (err, stdout, stderr) => {
-    res.json({ available: !err, output: stdout || stderr || String(err) });
-  });
-});
-
 app.get('/carrier-test', (req, res) => {
   const exists = fs.existsSync(CARRIER);
+  const wmExists = fs.existsSync(WM);
   const size = exists ? fs.statSync(CARRIER).size : 0;
-  res.json({ 
-    carrier_exists: exists, 
+  res.json({
+    carrier_exists: exists,
     carrier_size_mb: (size/1024/1024).toFixed(2),
-    carrier_path: CARRIER
+    watermark_py_exists: wmExists
   });
 });
 
@@ -194,6 +173,5 @@ app.listen(PORT, () => {
   console.log('GET  /watermark/:code');
   console.log('POST /detect');
   console.log('GET  /health');
-  console.log('GET  /audiowmark-test');
   console.log('GET  /carrier-test');
 });
