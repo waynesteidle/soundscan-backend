@@ -8,21 +8,19 @@ Detection:      1-2 seconds from any point in the loop
 """
 import numpy as np
 from scipy.io import wavfile
-from scipy.signal import butter, filtfilt
 import sys
 import os
 
 SR    = 44100
 FRAME = 1024
-BIN_FREQ = SR / FRAME  # 43.07Hz
+BIN_FREQ = SR / FRAME  # 43.07Hz per bin
 
-# Encoding bands - exactly on audiowmark FFT bin boundaries
 PRIMARY_BINS   = list(range(186, 280))  # 8,010Hz - 12,016Hz
 SECONDARY_BINS = list(range(349, 396))  # 15,030Hz - 17,011Hz
 ALL_BINS       = PRIMARY_BINS + SECONDARY_BINS
 
-STRENGTH = 0.25  # Watermark embedding strength
-SEED     = 42    # Deterministic key
+STRENGTH = 0.35
+SEED     = 42
 
 
 def code_to_bits(code: str) -> list:
@@ -40,7 +38,37 @@ def get_embed_pairs() -> list:
     bins = PRIMARY_BINS.copy()
     rng.shuffle(bins)
     pairs = [(bins[i], bins[i+1]) for i in range(0, min(180, len(bins)-1), 2)]
-    return pairs[:90]  # 90 pairs for 30 bits × 3 repeats
+    return pairs[:90]
+
+
+def load_audio(path: str) -> np.ndarray:
+    """Load WAV file as float64 mono array at SR=44100."""
+    sr, data = wavfile.read(path)
+    
+    # Convert to float
+    if data.dtype == np.int16:
+        audio = data.astype(np.float64) / 32768.0
+    elif data.dtype == np.int32:
+        audio = data.astype(np.float64) / 2147483648.0
+    elif data.dtype == np.float32:
+        audio = data.astype(np.float64)
+    else:
+        audio = data.astype(np.float64)
+    
+    # Convert stereo to mono
+    if audio.ndim == 2:
+        audio = audio[:, 0]
+    
+    # Resample if needed
+    if sr != SR:
+        # Simple resample using interpolation
+        duration = len(audio) / sr
+        old_indices = np.arange(len(audio))
+        new_length = int(duration * SR)
+        new_indices = np.linspace(0, len(audio)-1, new_length)
+        audio = np.interp(new_indices, old_indices, audio)
+    
+    return audio
 
 
 def embed(audio: np.ndarray, code: str) -> np.ndarray:
@@ -96,7 +124,6 @@ def detect(audio: np.ndarray):
 
 
 def generate_carrier(duration: float = 30.0, output_path: str = 'soundscan_carrier.wav'):
-    """Generate optimized carrier WAV file."""
     N = int(SR * duration)
     t = np.linspace(0, duration, N, endpoint=False)
     np.random.seed(SEED)
@@ -114,12 +141,7 @@ def generate_carrier(duration: float = 30.0, output_path: str = 'soundscan_carri
 
 
 def watermark_file(input_wav: str, output_wav: str, code: str):
-    """Embed code into carrier WAV file."""
-    sr, data = wavfile.read(input_wav)
-    if data.ndim == 2:
-        audio = data[:, 0].astype(np.float64) / 32768.0
-    else:
-        audio = data.astype(np.float64) / 32768.0
+    audio = load_audio(input_wav)
     watermarked = embed(audio, code)
     watermarked_int16 = np.clip(watermarked * 32767, -32768, 32767).astype(np.int16)
     stereo = np.column_stack([watermarked_int16, watermarked_int16])
@@ -127,12 +149,7 @@ def watermark_file(input_wav: str, output_wav: str, code: str):
 
 
 def detect_file(input_wav: str):
-    """Detect code from WAV file. Returns (code, confidence)."""
-    sr, data = wavfile.read(input_wav)
-    if data.ndim == 2:
-        audio = data[:, 0].astype(np.float64) / 32768.0
-    else:
-        audio = data.astype(np.float64) / 32768.0
+    audio = load_audio(input_wav)
     return detect(audio)
 
 
@@ -150,17 +167,21 @@ if __name__ == '__main__':
         out  = sys.argv[2] if len(sys.argv) > 2 else 'soundscan_carrier.wav'
         dur  = float(sys.argv[3]) if len(sys.argv) > 3 else 30.0
         path = generate_carrier(dur, out)
-        print(f"Carrier generated: {path} ({dur}s)")
+        print(f"Carrier generated: {path} ({dur}s)", flush=True)
 
     elif cmd == 'embed':
         inp, out, code = sys.argv[2], sys.argv[3], sys.argv[4]
         watermark_file(inp, out, code)
-        print(f"Watermarked: {out}")
+        print(f"Watermarked: {out}", flush=True)
 
     elif cmd == 'detect':
         inp = sys.argv[2]
-        code, conf = detect_file(inp)
-        if code:
-            print(f"Detected: {code} (confidence={conf:.3f})")
-        else:
-            print(f"Nothing detected (confidence={conf:.3f})")
+        try:
+            code, conf = detect_file(inp)
+            if code:
+                print(f"Detected: {code} (confidence={conf:.3f})", flush=True)
+            else:
+                print(f"Nothing detected (confidence={conf:.3f})", flush=True)
+        except Exception as e:
+            print(f"Error: {e}", flush=True)
+            sys.exit(1)
