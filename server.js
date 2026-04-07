@@ -121,11 +121,25 @@ app.get('/watermark/:code', async (req, res) => {
 app.post('/detect', upload.single('audio'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No audio file uploaded' });
 
-  const input = req.file.path;
-  const cmd = 'python3 ' + WM + ' detect_any_sr ' + input;
+  const input  = req.file.path;
+  const converted = input + '_converted.wav';
+
+  // Convert uploaded audio to standard WAV format first
+  exec('ffmpeg -y -i ' + input + ' -ar 44100 -ac 1 -f wav ' + converted, (ferr, fout, ferr2) => {
+    try { fs.unlinkSync(input); } catch {}
+    if (ferr) {
+      // If ffmpeg fails, try directly
+      runDetect(input);
+    } else {
+      runDetect(converted);
+    }
+  });
+
+  function runDetect(audioFile) {
+  const cmd = 'python3 ' + WM + ' detect_any_sr ' + audioFile;
 
   exec(cmd, async (err, stdout, stderr) => {
-    try { fs.unlinkSync(input); } catch {}
+    try { fs.unlinkSync(audioFile); } catch {}
 
     console.log('Detect output: ' + stdout.trim());
 
@@ -149,6 +163,7 @@ app.post('/detect', upload.single('audio'), async (req, res) => {
       res.status(404).json({ error: 'No watermark detected', raw: stdout });
     }
   });
+  }
 });
 
 app.get('/health', (req, res) => {
