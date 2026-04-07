@@ -170,6 +170,18 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+
+app.get('/python-test', (req, res) => {
+  exec('python3 ' + WM + ' detect_any_sr 2>&1 || true', (err, stdout, stderr) => {
+    exec('python3 -c "import numpy; import scipy; print(numpy.__version__, scipy.__version__)"', (err2, stdout2, stderr2) => {
+      res.json({ 
+        wm_test: stdout || stderr || String(err),
+        python_libs: stdout2 || stderr2 || String(err2)
+      });
+    });
+  });
+});
+
 app.get('/carrier-test', (req, res) => {
   const exists = fs.existsSync(CARRIER);
   const wmExists = fs.existsSync(WM);
