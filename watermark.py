@@ -21,7 +21,7 @@ LOW_BINS  = list(range(93,  186))  # 4,005Hz - 7,967Hz
 HIGH_BINS = list(range(186, 280))  # 8,010Hz - 12,016Hz
 ALL_BINS  = LOW_BINS + HIGH_BINS
 
-STRENGTH = 0.60
+STRENGTH = 0.75
 SEED     = 42
 
 
