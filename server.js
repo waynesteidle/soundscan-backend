@@ -154,13 +154,15 @@ app.post('/detect', upload.single('audio'), async (req, res) => {
         if (row.rows.length > 0) {
           res.json({ code, url: row.rows[0].url, confidence: conf });
         } else {
-          res.status(404).json({ error: 'Code detected but not in database', code, confidence: conf });
+          res.status(404).json({ error: 'Code not found in database', code, confidence: conf });
         }
       } catch (dbErr) {
         res.status(500).json({ error: 'Database error' });
       }
     } else {
-      res.status(404).json({ error: 'No watermark detected', raw: stdout });
+      const nothingMatch = stdout.match(/Nothing detected \(confidence=([\d.]+)\)/);
+      const conf = nothingMatch ? parseFloat(nothingMatch[1]) : 0;
+      res.status(404).json({ error: 'No watermark detected', confidence: conf });
     }
   });
   }
@@ -170,6 +172,35 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+
+
+app.get('/wm-test', (req, res) => {
+  const testCode = '123456789';
+  const carrier = path.join(TMP, 'wm_diag_carrier.wav');
+  const marked  = path.join(TMP, 'wm_diag_marked.wav');
+  
+  // Generate a short carrier and watermark it, then detect
+  exec('python3 -c "import sys; sys.path.insert(0,chr(47)+chr(97)+chr(112)+chr(112)); from watermark import generate_carrier, watermark_file, detect_file; generate_carrier(5.0, chr(47)+chr(116)+chr(109)+chr(112)+chr(47)+chr(99)+chr(97)+chr(114)+chr(46)+chr(119)+chr(97)+chr(118)); watermark_file(chr(47)+chr(116)+chr(109)+chr(112)+chr(47)+chr(99)+chr(97)+chr(114)+chr(46)+chr(119)+chr(97)+chr(118), chr(47)+chr(116)+chr(109)+chr(112)+chr(47)+chr(109)+chr(107)+chr(46)+chr(119)+chr(97)+chr(118), chr(49)+chr(50)+chr(51)+chr(52)+chr(53)+chr(54)+chr(55)+chr(56)+chr(57)); code,conf = detect_file(chr(47)+chr(116)+chr(109)+chr(112)+chr(47)+chr(109)+chr(107)+chr(46)+chr(119)+chr(97)+chr(118)); print(code, conf)"', (err, stdout, stderr) => {
+    res.json({ result: stdout.trim(), error: stderr.trim() });
+  });
+});
+
+
+app.get('/wm-test', (req, res) => {
+  const script = `
+import sys
+sys.path.insert(0, '/app')
+from watermark import generate_carrier, watermark_file, detect_file
+generate_carrier(5.0, '/tmp/tc.wav')
+watermark_file('/tmp/tc.wav', '/tmp/tm.wav', '123456789')
+code, conf = detect_file('/tmp/tm.wav')
+print(f'{code} {conf:.3f}')
+`;
+  exec('python3 -c "' + script.replace(/"/g, '\"').replace(/
+/g, ';') + '"', (err, stdout, stderr) => {
+    res.json({ result: stdout.trim(), error: stderr.trim().slice(0,200) });
+  });
+});
 
 app.get('/python-test', (req, res) => {
   exec('python3 ' + WM + ' detect_any_sr 2>&1 || true', (err, stdout, stderr) => {
