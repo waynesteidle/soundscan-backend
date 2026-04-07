@@ -166,11 +166,16 @@ if __name__ == '__main__':
 
     elif cmd == 'detect_any_sr':
         inp = sys.argv[2]
-        code, conf = detect_file_any_sr(inp)
-        if code:
-            print(f'Detected: {code} (confidence={conf:.3f})')
-        else:
-            print(f'Nothing detected (confidence={conf:.3f})')
+        try:
+            code, conf = detect_file_any_sr(inp)
+            if code:
+                print(f'Detected: {code} (confidence={conf:.3f})')
+            else:
+                print(f'Nothing detected (confidence={conf:.3f})')
+        except Exception as e:
+            import traceback
+            print(f'ERROR: {e}')
+            traceback.print_exc()
 
     elif cmd == 'detect':
         inp = sys.argv[2]
