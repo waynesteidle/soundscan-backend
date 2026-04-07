@@ -78,17 +78,12 @@ app.get('/lookup/:code', async (req, res) => {
     const result = await pool.query('SELECT code, url FROM codes WHERE code = $1', [code]);
     if (result.rows.length === 0) return res.status(404).json({ error: 'Code not found' });
     const row = result.rows[0];
-    console.log('Lookup ' + code + ' -> ' + row.url);
     res.json({ code: row.code, url: row.url });
   } catch (err) {
     res.status(500).json({ error: 'Database error' });
   }
 });
 
-// Generate watermarked WAV using custom SoundScan watermarker
-// Primary band 8-12kHz: survives ALL TV speakers
-// Secondary band 15-17kHz: sub-human on good TVs
-// Detects in 1 second from any point in the 30-second loop
 app.get('/watermark/:code', async (req, res) => {
   const { code } = req.params;
   if (!/^\d{9}$/.test(code)) return res.status(400).json({ error: 'Code must be 9 digits' });
@@ -117,106 +112,51 @@ app.get('/watermark/:code', async (req, res) => {
   });
 });
 
-// Detect watermark from uploaded audio recording
 app.post('/detect', upload.single('audio'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No audio file uploaded' });
 
-  const input  = req.file.path;
+  const input     = req.file.path;
   const converted = input + '_converted.wav';
 
-  // Convert uploaded audio to standard WAV format first
-  exec('ffmpeg -y -i ' + input + ' -ar 44100 -ac 1 -f wav ' + converted, (ferr, fout, ferr2) => {
+  exec('ffmpeg -y -i ' + input + ' -ar 44100 -ac 1 -f wav ' + converted, (ferr) => {
     try { fs.unlinkSync(input); } catch {}
-    if (ferr) {
-      // If ffmpeg fails, try directly
-      runDetect(input);
-    } else {
-      runDetect(converted);
-    }
-  });
+    const audioFile = ferr ? input : converted;
 
-  function runDetect(audioFile) {
-  const cmd = 'python3 ' + WM + ' detect_any_sr ' + audioFile;
+    const cmd = 'python3 ' + WM + ' detect ' + audioFile;
+    exec(cmd, async (err, stdout, stderr) => {
+      try { fs.unlinkSync(audioFile); } catch {}
 
-  exec(cmd, async (err, stdout, stderr) => {
-    try { fs.unlinkSync(audioFile); } catch {}
+      console.log('Detect output: ' + stdout.trim());
 
-    console.log('Detect output: ' + stdout.trim());
-
-    // Parse output: "Detected: 123456789 (confidence=0.987)"
-    const m = stdout.match(/Detected:\s*(\d{9})\s*\(confidence=([\d.]+)\)/);
-
-    if (m) {
-      const code = m[1];
-      const conf = parseFloat(m[2]);
-      try {
-        const row = await pool.query('SELECT code, url FROM codes WHERE code = $1', [code]);
-        if (row.rows.length > 0) {
-          res.json({ code, url: row.rows[0].url, confidence: conf });
-        } else {
-          res.status(404).json({ error: 'Code not found in database', code, confidence: conf });
+      const m = stdout.match(/Detected:\s*(\d{9})\s*\(confidence=([\d.]+)\)/);
+      if (m) {
+        const code = m[1];
+        const conf = parseFloat(m[2]);
+        try {
+          const row = await pool.query('SELECT code, url FROM codes WHERE code = $1', [code]);
+          if (row.rows.length > 0) {
+            res.json({ code, url: row.rows[0].url, confidence: conf });
+          } else {
+            res.status(404).json({ error: 'Code not in database', code, confidence: conf });
+          }
+        } catch (dbErr) {
+          res.status(500).json({ error: 'Database error' });
         }
-      } catch (dbErr) {
-        res.status(500).json({ error: 'Database error' });
+      } else {
+        res.status(404).json({ error: 'No watermark detected', raw: stdout });
       }
-    } else {
-      const nothingMatch = stdout.match(/Nothing detected \(confidence=([\d.]+)\)/);
-      const conf = nothingMatch ? parseFloat(nothingMatch[1]) : 0;
-      res.status(404).json({ error: 'No watermark detected', confidence: conf });
-    }
+    });
   });
-  }
 });
 
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-
-
-app.get('/wm-test', (req, res) => {
-  const testCode = '123456789';
-  const carrier = path.join(TMP, 'wm_diag_carrier.wav');
-  const marked  = path.join(TMP, 'wm_diag_marked.wav');
-  
-  // Generate a short carrier and watermark it, then detect
-  exec('python3 -c "import sys; sys.path.insert(0,chr(47)+chr(97)+chr(112)+chr(112)); from watermark import generate_carrier, watermark_file, detect_file; generate_carrier(5.0, chr(47)+chr(116)+chr(109)+chr(112)+chr(47)+chr(99)+chr(97)+chr(114)+chr(46)+chr(119)+chr(97)+chr(118)); watermark_file(chr(47)+chr(116)+chr(109)+chr(112)+chr(47)+chr(99)+chr(97)+chr(114)+chr(46)+chr(119)+chr(97)+chr(118), chr(47)+chr(116)+chr(109)+chr(112)+chr(47)+chr(109)+chr(107)+chr(46)+chr(119)+chr(97)+chr(118), chr(49)+chr(50)+chr(51)+chr(52)+chr(53)+chr(54)+chr(55)+chr(56)+chr(57)); code,conf = detect_file(chr(47)+chr(116)+chr(109)+chr(112)+chr(47)+chr(109)+chr(107)+chr(46)+chr(119)+chr(97)+chr(118)); print(code, conf)"', (err, stdout, stderr) => {
-    res.json({ result: stdout.trim(), error: stderr.trim() });
-  });
-});
-
-
-app.get('/wm-test', (req, res) => {
-  const script = `
-import sys
-sys.path.insert(0, '/app')
-from watermark import generate_carrier, watermark_file, detect_file
-generate_carrier(5.0, '/tmp/tc.wav')
-watermark_file('/tmp/tc.wav', '/tmp/tm.wav', '123456789')
-code, conf = detect_file('/tmp/tm.wav')
-print(f'{code} {conf:.3f}')
-`;
-  exec('python3 -c "' + script.replace(/"/g, '\"').replace(/
-/g, ';') + '"', (err, stdout, stderr) => {
-    res.json({ result: stdout.trim(), error: stderr.trim().slice(0,200) });
-  });
-});
-
-app.get('/python-test', (req, res) => {
-  exec('python3 ' + WM + ' detect_any_sr 2>&1 || true', (err, stdout, stderr) => {
-    exec('python3 -c "import numpy; import scipy; print(numpy.__version__, scipy.__version__)"', (err2, stdout2, stderr2) => {
-      res.json({ 
-        wm_test: stdout || stderr || String(err),
-        python_libs: stdout2 || stderr2 || String(err2)
-      });
-    });
-  });
-});
-
 app.get('/carrier-test', (req, res) => {
-  const exists = fs.existsSync(CARRIER);
+  const exists   = fs.existsSync(CARRIER);
   const wmExists = fs.existsSync(WM);
-  const size = exists ? fs.statSync(CARRIER).size : 0;
+  const size     = exists ? fs.statSync(CARRIER).size : 0;
   res.json({
     carrier_exists: exists,
     carrier_size_mb: (size/1024/1024).toFixed(2),
@@ -224,12 +164,22 @@ app.get('/carrier-test', (req, res) => {
   });
 });
 
+app.get('/wm-test', (req, res) => {
+  const tc = path.join(TMP, 'wm_test_carrier.wav');
+  const tm = path.join(TMP, 'wm_test_marked.wav');
+  exec('python3 ' + WM + ' generate ' + tc + ' 5', (e1) => {
+    if (e1) return res.json({ error: 'generate failed', detail: String(e1) });
+    exec('python3 ' + WM + ' embed ' + tc + ' ' + tm + ' 123456789', (e2) => {
+      try { fs.unlinkSync(tc); } catch {}
+      if (e2) return res.json({ error: 'embed failed', detail: String(e2) });
+      exec('python3 ' + WM + ' detect ' + tm, (e3, stdout) => {
+        try { fs.unlinkSync(tm); } catch {}
+        res.json({ result: stdout.trim(), error: e3 ? String(e3) : null });
+      });
+    });
+  });
+});
+
 app.listen(PORT, () => {
   console.log('SoundScan API running at http://localhost:' + PORT);
-  console.log('POST /generate');
-  console.log('GET  /lookup/:code');
-  console.log('GET  /watermark/:code');
-  console.log('POST /detect');
-  console.log('GET  /health');
-  console.log('GET  /carrier-test');
 });
