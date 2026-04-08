@@ -47,6 +47,19 @@ function isValidUrl(str) {
   } catch { return false; }
 }
 
+// Generate all single-bit-flip variants of a 9-digit code
+function bitFlipVariants(code) {
+  const n = parseInt(code);
+  const variants = new Set();
+  for (let i = 0; i < 30; i++) {
+    const flipped = n ^ (1 << i);
+    if (flipped >= 100000000 && flipped <= 999999999) {
+      variants.add(String(flipped));
+    }
+  }
+  return Array.from(variants);
+}
+
 app.post('/generate', async (req, res) => {
   const { url } = req.body;
   if (!url) return res.status(400).json({ error: 'url is required' });
@@ -118,38 +131,54 @@ app.post('/detect', upload.single('audio'), async (req, res) => {
   const input     = req.file.path;
   const converted = input + '_converted.wav';
 
-  // Log uploaded file info
-  exec('ffprobe -v quiet -print_format json -show_streams ' + input, (pe, pout) => {
-    try { const info = JSON.parse(pout); const s = info.streams && info.streams[0]; if(s) console.log('Upload: sr=' + s.sample_rate + ' ch=' + s.channels + ' codec=' + s.codec_name + ' dur=' + s.duration); } catch(e) {}
-  });
-  exec('ffmpeg -y -i ' + input + ' -ar 44100 -ac 1 -f wav ' + converted, (ferr) => {
+  exec('ffmpeg -y -i ' + input + ' -ar 44100 -ac 1 -f wav ' + converted, async (ferr) => {
     try { fs.unlinkSync(input); } catch {}
     const audioFile = ferr ? input : converted;
 
-    const cmd = 'python3 ' + WM + ' detect ' + audioFile;
+    const cmd = 'python3 ' + WM + ' detect_raw ' + audioFile;
     exec(cmd, async (err, stdout, stderr) => {
       try { fs.unlinkSync(audioFile); } catch {}
 
       console.log('Detect output: ' + stdout.trim());
-    console.log('Detect stderr: ' + stderr.trim().slice(0,100));
-    console.log('File size: ' + require('fs').existsSync(audioFile) ? 'deleted' : 'gone');
 
-      const m = stdout.match(/Detected:\s*(\d{9})\s*\(confidence=([\d.]+)\)/);
-      if (m) {
-        const code = m[1];
-        const conf = parseFloat(m[2]);
-        try {
-          const row = await pool.query('SELECT code, url FROM codes WHERE code = $1', [code]);
-          if (row.rows.length > 0) {
-            res.json({ code, url: row.rows[0].url, confidence: conf });
-          } else {
-            res.status(404).json({ error: 'Code not in database', code, confidence: conf });
-          }
-        } catch (dbErr) {
-          res.status(500).json({ error: 'Database error' });
+      // Parse: "Raw: <number> Confidence: <conf>"
+      const rawMatch  = stdout.match(/Raw:\s*(\d+)/);
+      const confMatch = stdout.match(/Confidence:\s*([\d.]+)/);
+
+      if (!rawMatch || !confMatch) {
+        return res.status(404).json({ error: 'No watermark detected', raw: stdout });
+      }
+
+      const rawN = parseInt(rawMatch[1]);
+      const conf = parseFloat(confMatch[1]);
+      const candidates = [];
+
+      // Add exact code if valid
+      if (rawN >= 100000000 && rawN <= 999999999) {
+        candidates.push(String(rawN));
+      }
+
+      // Add all single-bit-flip variants
+      for (let i = 0; i < 30; i++) {
+        const flipped = rawN ^ (1 << i);
+        if (flipped >= 100000000 && flipped <= 999999999) {
+          candidates.push(String(flipped));
         }
-      } else {
-        res.status(404).json({ error: 'No watermark detected', raw: stdout });
+      }
+
+      // Check all candidates against DB
+      try {
+        for (const candidate of candidates) {
+          const row = await pool.query('SELECT code, url FROM codes WHERE code = $1', [candidate]);
+          if (row.rows.length > 0) {
+            const isExact = candidate === String(rawN);
+            console.log('Matched: ' + candidate + (isExact ? ' (exact)' : ' (1-bit corrected from ' + rawN + ')'));
+            return res.json({ code: candidate, url: row.rows[0].url, confidence: conf });
+          }
+        }
+        res.status(404).json({ error: 'No watermark detected', raw: stdout, raw_n: rawN, confidence: conf });
+      } catch (dbErr) {
+        res.status(500).json({ error: 'Database error' });
       }
     });
   });
@@ -163,22 +192,18 @@ app.get('/carrier-test', (req, res) => {
   const exists   = fs.existsSync(CARRIER);
   const wmExists = fs.existsSync(WM);
   const size     = exists ? fs.statSync(CARRIER).size : 0;
-  res.json({
-    carrier_exists: exists,
-    carrier_size_mb: (size/1024/1024).toFixed(2),
-    watermark_py_exists: wmExists
-  });
+  res.json({ carrier_exists: exists, carrier_size_mb: (size/1024/1024).toFixed(2), watermark_py_exists: wmExists });
 });
 
 app.get('/wm-test', (req, res) => {
   const tc = path.join(TMP, 'wm_test_carrier.wav');
   const tm = path.join(TMP, 'wm_test_marked.wav');
   exec('python3 ' + WM + ' generate ' + tc + ' 5', (e1) => {
-    if (e1) return res.json({ error: 'generate failed', detail: String(e1) });
+    if (e1) return res.json({ error: 'generate failed' });
     exec('python3 ' + WM + ' embed ' + tc + ' ' + tm + ' 123456789', (e2) => {
       try { fs.unlinkSync(tc); } catch {}
-      if (e2) return res.json({ error: 'embed failed', detail: String(e2) });
-      exec('python3 ' + WM + ' detect ' + tm, (e3, stdout) => {
+      if (e2) return res.json({ error: 'embed failed' });
+      exec('python3 ' + WM + ' detect_raw ' + tm, (e3, stdout) => {
         try { fs.unlinkSync(tm); } catch {}
         res.json({ result: stdout.trim(), error: e3 ? String(e3) : null });
       });

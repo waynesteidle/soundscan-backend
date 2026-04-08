@@ -21,7 +21,7 @@ LOW_BINS  = list(range(93,  186))  # 4,005Hz - 7,967Hz
 HIGH_BINS = list(range(186, 280))  # 8,010Hz - 12,016Hz
 ALL_BINS  = LOW_BINS + HIGH_BINS
 
-STRENGTH = 0.75
+STRENGTH = 0.45
 SEED     = 42
 
 
@@ -158,6 +158,33 @@ if __name__ == '__main__':
             print(f"Watermarked: {out}")
         except Exception as e:
             print(f"ERROR: {e}"); traceback.print_exc()
+
+    elif cmd == 'detect_raw':
+        inp = sys.argv[2]
+        try:
+            audio, sr = load_audio(inp)
+            audio = resample_to_44100(audio, sr)
+            pairs = get_pairs()
+            votes = np.zeros((30, 2))
+            fs = 0
+            while fs + FRAME <= len(audio):
+                frame = audio[fs:fs+FRAME].astype(np.float64)
+                spec = np.fft.rfft(frame)
+                for b_idx in range(30):
+                    b1, b2 = pairs[b_idx]
+                    m1, m2 = np.abs(spec[b1]), np.abs(spec[b2])
+                    t = m1+m2
+                    if t > 0:
+                        if m1 > m2: votes[b_idx][1] += (m1-m2)/t
+                        else:       votes[b_idx][0] += (m2-m1)/t
+                fs += FRAME
+            bits = [1 if votes[i][1]>votes[i][0] else 0 for i in range(30)]
+            conf = float(np.mean([max(votes[i])/max(sum(votes[i]),1e-10) for i in range(30)]))
+            n = sum(b << (29-i) for i,b in enumerate(bits))
+            print(f"Raw: {n} Confidence: {conf:.3f}")
+        except Exception as e:
+            print(f"ERROR: {e}")
+            traceback.print_exc()
 
     elif cmd == 'detect':
         inp = sys.argv[2]
