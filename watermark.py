@@ -1,10 +1,12 @@
 """
-SoundScan Custom Watermarker v4 - Phase Independent
-Embeds ALL 30 bits in EVERY frame - detection works from any start point.
+SoundScan Custom Watermarker v5 - Same-Band Pairs
+Pairs both bins within the same 4-12kHz band.
+Immune to frequency response bias from iPhone mic/TV speakers.
 
-Cross-band pairs: 4-8kHz (low) vs 8-12kHz (high)
-Robust against: room reflections, comb filtering, speaker rolloff, noise
-Detection speed: 0.1 seconds from ANY point in the loop
+Band: 4kHz-12kHz (187 bins)
+Pairs: same-band (both bins within 4-12kHz)
+Detection: 0.1 seconds from any point in loop
+Robust against: frequency bias, room noise, speaker rolloff, any offset
 """
 import numpy as np
 from scipy.io import wavfile
@@ -17,12 +19,9 @@ SR       = 44100
 FRAME    = 1024
 BIN_FREQ = SR / FRAME  # 43.07Hz
 
-LOW_BINS  = list(range(93,  186))  # 4,005Hz - 7,967Hz
-HIGH_BINS = list(range(186, 280))  # 8,010Hz - 12,016Hz
-ALL_BINS  = LOW_BINS + HIGH_BINS
-
-STRENGTH = 0.45
-SEED     = 42
+BAND_BINS = list(range(93, 280))   # 4,005Hz - 12,016Hz (187 bins)
+STRENGTH  = 0.75
+SEED      = 42
 
 
 def code_to_bits(code):
@@ -36,17 +35,16 @@ def bits_to_code(bits):
 
 
 def get_pairs():
-    """30 cross-band pairs: pair[i] always encodes/detects bit[i]"""
+    """30 same-band pairs within 4-12kHz — immune to frequency bias"""
     rng = np.random.default_rng(SEED)
-    low  = LOW_BINS.copy()
-    high = HIGH_BINS.copy()
-    rng.shuffle(low)
-    rng.shuffle(high)
-    return [(low[i], high[i]) for i in range(30)]
+    bins = BAND_BINS.copy()
+    rng.shuffle(bins)
+    half = len(bins) // 2
+    return [(bins[i], bins[i + half]) for i in range(30)]
 
 
 def embed(audio, code):
-    """Embed ALL 30 bits in EVERY frame - phase independent detection"""
+    """Embed ALL 30 bits in EVERY frame — phase independent"""
     bits  = code_to_bits(code)
     pairs = get_pairs()
     output = audio.copy().astype(np.float64)
@@ -69,7 +67,7 @@ def embed(audio, code):
 
 
 def detect(audio):
-    """Each frame votes on all 30 bits - works from any start point"""
+    """Each frame votes on all 30 bits — works from any start point"""
     pairs = get_pairs()
     votes = np.zeros((30, 2))
     fs = 0
@@ -86,7 +84,8 @@ def detect(audio):
         fs += FRAME
     bits = [1 if votes[i][1]>votes[i][0] else 0 for i in range(30)]
     conf = float(np.mean([max(votes[i])/max(sum(votes[i]),1e-10) for i in range(30)]))
-    return bits_to_code(bits), conf
+    n    = sum(b << (29-i) for i, b in enumerate(bits))
+    return bits_to_code(bits), conf, n
 
 
 def load_audio(path):
@@ -116,7 +115,8 @@ def watermark_file(input_wav, output_wav, code):
 def detect_file(input_wav):
     audio, sr = load_audio(input_wav)
     audio = resample_to_44100(audio, sr)
-    return detect(audio)
+    code, conf, n = detect(audio)
+    return code, conf
 
 
 def generate_carrier(duration=30.0, output_path='soundscan_carrier.wav'):
@@ -124,7 +124,7 @@ def generate_carrier(duration=30.0, output_path='soundscan_carrier.wav'):
     t = np.linspace(0, duration, N, endpoint=False)
     np.random.seed(SEED)
     carrier = np.zeros(N)
-    for b in ALL_BINS:
+    for b in BAND_BINS:
         freq  = b * BIN_FREQ
         phase = np.random.uniform(0, 2*np.pi)
         carrier += np.sin(2*np.pi*freq*t + phase)
@@ -141,6 +141,7 @@ if __name__ == '__main__':
         print("  python watermark.py generate [output.wav] [duration]")
         print("  python watermark.py embed <input.wav> <output.wav> <code>")
         print("  python watermark.py detect <input.wav>")
+        print("  python watermark.py detect_raw <input.wav>")
         sys.exit(1)
 
     cmd = sys.argv[1]
@@ -159,33 +160,6 @@ if __name__ == '__main__':
         except Exception as e:
             print(f"ERROR: {e}"); traceback.print_exc()
 
-    elif cmd == 'detect_raw':
-        inp = sys.argv[2]
-        try:
-            audio, sr = load_audio(inp)
-            audio = resample_to_44100(audio, sr)
-            pairs = get_pairs()
-            votes = np.zeros((30, 2))
-            fs = 0
-            while fs + FRAME <= len(audio):
-                frame = audio[fs:fs+FRAME].astype(np.float64)
-                spec = np.fft.rfft(frame)
-                for b_idx in range(30):
-                    b1, b2 = pairs[b_idx]
-                    m1, m2 = np.abs(spec[b1]), np.abs(spec[b2])
-                    t = m1+m2
-                    if t > 0:
-                        if m1 > m2: votes[b_idx][1] += (m1-m2)/t
-                        else:       votes[b_idx][0] += (m2-m1)/t
-                fs += FRAME
-            bits = [1 if votes[i][1]>votes[i][0] else 0 for i in range(30)]
-            conf = float(np.mean([max(votes[i])/max(sum(votes[i]),1e-10) for i in range(30)]))
-            n = sum(b << (29-i) for i,b in enumerate(bits))
-            print(f"Raw: {n} Confidence: {conf:.3f}")
-        except Exception as e:
-            print(f"ERROR: {e}")
-            traceback.print_exc()
-
     elif cmd == 'detect':
         inp = sys.argv[2]
         try:
@@ -194,6 +168,16 @@ if __name__ == '__main__':
                 print(f"Detected: {code} (confidence={conf:.3f})")
             else:
                 print(f"Nothing detected (confidence={conf:.3f})")
+        except Exception as e:
+            print(f"ERROR: {e}"); traceback.print_exc()
+
+    elif cmd == 'detect_raw':
+        inp = sys.argv[2]
+        try:
+            audio, sr = load_audio(inp)
+            audio = resample_to_44100(audio, sr)
+            code, conf, n = detect(audio)
+            print(f"Raw: {n} Confidence: {conf:.3f}")
         except Exception as e:
             print(f"ERROR: {e}"); traceback.print_exc()
 
