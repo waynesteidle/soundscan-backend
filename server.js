@@ -11,6 +11,7 @@ const app  = express();
 const PORT = process.env.PORT || 3000;
 const TMP  = '/tmp';
 const WM   = path.join(__dirname, 'watermark.py');
+const SP   = path.join(__dirname, 'spectrum.py');
 const CARRIER = path.join(__dirname, 'soundscan_carrier.wav');
 
 app.use(cors({ origin: '*', methods: ['GET', 'POST'], allowedHeaders: ['Content-Type'] }));
@@ -45,19 +46,6 @@ function isValidUrl(str) {
     const u = new URL(str);
     return u.protocol === 'http:' || u.protocol === 'https:';
   } catch { return false; }
-}
-
-// Generate all single-bit-flip variants of a 9-digit code
-function bitFlipVariants(code) {
-  const n = parseInt(code);
-  const variants = new Set();
-  for (let i = 0; i < 30; i++) {
-    const flipped = n ^ (1 << i);
-    if (flipped >= 100000000 && flipped <= 999999999) {
-      variants.add(String(flipped));
-    }
-  }
-  return Array.from(variants);
 }
 
 app.post('/generate', async (req, res) => {
@@ -135,13 +123,17 @@ app.post('/detect', upload.single('audio'), async (req, res) => {
     try { fs.unlinkSync(input); } catch {}
     const audioFile = ferr ? input : converted;
 
+    // Log spectrum for diagnostics
+    exec('python3 ' + SP + ' ' + audioFile, (se, so) => {
+      if (so) console.log('Spectrum: ' + so.trim().replace(/\n/g, ' | '));
+    });
+
     const cmd = 'python3 ' + WM + ' detect_raw ' + audioFile;
     exec(cmd, async (err, stdout, stderr) => {
       try { fs.unlinkSync(audioFile); } catch {}
 
-      console.log('Detect output: ' + stdout.trim());
+      console.log('Detect: ' + stdout.trim());
 
-      // Parse: "Raw: <number> Confidence: <conf>"
       const rawMatch  = stdout.match(/Raw:\s*(\d+)/);
       const confMatch = stdout.match(/Confidence:\s*([\d.]+)/);
 
@@ -151,28 +143,21 @@ app.post('/detect', upload.single('audio'), async (req, res) => {
 
       const rawN = parseInt(rawMatch[1]);
       const conf = parseFloat(confMatch[1]);
+
+      // Try exact + all single-bit-flip variants
       const candidates = [];
-
-      // Add exact code if valid
-      if (rawN >= 100000000 && rawN <= 999999999) {
-        candidates.push(String(rawN));
-      }
-
-      // Add all single-bit-flip variants
+      if (rawN >= 100000000 && rawN <= 999999999) candidates.push(String(rawN));
       for (let i = 0; i < 30; i++) {
         const flipped = rawN ^ (1 << i);
-        if (flipped >= 100000000 && flipped <= 999999999) {
-          candidates.push(String(flipped));
-        }
+        if (flipped >= 100000000 && flipped <= 999999999) candidates.push(String(flipped));
       }
 
-      // Check all candidates against DB
       try {
         for (const candidate of candidates) {
           const row = await pool.query('SELECT code, url FROM codes WHERE code = $1', [candidate]);
           if (row.rows.length > 0) {
             const isExact = candidate === String(rawN);
-            console.log('Matched: ' + candidate + (isExact ? ' (exact)' : ' (1-bit corrected from ' + rawN + ')'));
+            console.log('Matched: ' + candidate + (isExact ? ' (exact)' : ' (1-bit corrected)'));
             return res.json({ code: candidate, url: row.rows[0].url, confidence: conf });
           }
         }
