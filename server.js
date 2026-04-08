@@ -144,16 +144,22 @@ app.post('/detect', upload.single('audio'), async (req, res) => {
       const rawN = parseInt(rawMatch[1]);
       const conf = parseFloat(confMatch[1]);
 
-      // Try exact + all single-bit-flip variants
-      const candidates = [];
-      if (rawN >= 100000000 && rawN <= 999999999) candidates.push(String(rawN));
+      // Try exact + all 1-bit and 2-bit flip variants
+      const candidates = new Set();
+      if (rawN >= 100000000 && rawN <= 999999999) candidates.add(String(rawN));
+      // 1-bit flips
       for (let i = 0; i < 30; i++) {
-        const flipped = rawN ^ (1 << i);
-        if (flipped >= 100000000 && flipped <= 999999999) candidates.push(String(flipped));
+        const f1 = rawN ^ (1 << i);
+        if (f1 >= 100000000 && f1 <= 999999999) candidates.add(String(f1));
+        // 2-bit flips
+        for (let j = i+1; j < 30; j++) {
+          const f2 = rawN ^ (1 << i) ^ (1 << j);
+          if (f2 >= 100000000 && f2 <= 999999999) candidates.add(String(f2));
+        }
       }
 
       try {
-        for (const candidate of candidates) {
+        for (const candidate of Array.from(candidates)) {
           const row = await pool.query('SELECT code, url FROM codes WHERE code = $1', [candidate]);
           if (row.rows.length > 0) {
             const isExact = candidate === String(rawN);
