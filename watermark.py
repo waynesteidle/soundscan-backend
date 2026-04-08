@@ -30,7 +30,7 @@ LOW_BIN  = int(3000 / BIN_FREQ)   # 139
 HIGH_BIN = int(6000 / BIN_FREQ)   # 278
 BAND_BINS = list(range(LOW_BIN, HIGH_BIN + 1))
 
-STRENGTH = 0.90
+STRENGTH = 0.95
 SEED     = 42
 
 
@@ -57,7 +57,7 @@ def get_pairs():
         for b2 in bins:
             if b2 in used or b2 == b1:
                 continue
-            if abs(b1 - b2) * BIN_FREQ >= 300:
+            if abs(b1 - b2) * BIN_FREQ >= 500:
                 pairs.append((b1, b2))
                 used.add(b1)
                 used.add(b2)
