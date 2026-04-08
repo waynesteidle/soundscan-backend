@@ -118,6 +118,10 @@ app.post('/detect', upload.single('audio'), async (req, res) => {
   const input     = req.file.path;
   const converted = input + '_converted.wav';
 
+  // Log uploaded file info
+  exec('ffprobe -v quiet -print_format json -show_streams ' + input, (pe, pout) => {
+    try { const info = JSON.parse(pout); const s = info.streams && info.streams[0]; if(s) console.log('Upload: sr=' + s.sample_rate + ' ch=' + s.channels + ' codec=' + s.codec_name + ' dur=' + s.duration); } catch(e) {}
+  });
   exec('ffmpeg -y -i ' + input + ' -ar 44100 -ac 1 -f wav ' + converted, (ferr) => {
     try { fs.unlinkSync(input); } catch {}
     const audioFile = ferr ? input : converted;
@@ -127,6 +131,8 @@ app.post('/detect', upload.single('audio'), async (req, res) => {
       try { fs.unlinkSync(audioFile); } catch {}
 
       console.log('Detect output: ' + stdout.trim());
+    console.log('Detect stderr: ' + stderr.trim().slice(0,100));
+    console.log('File size: ' + require('fs').existsSync(audioFile) ? 'deleted' : 'gone');
 
       const m = stdout.match(/Detected:\s*(\d{9})\s*\(confidence=([\d.]+)\)/);
       if (m) {
