@@ -1,12 +1,11 @@
 """
-SoundScan Custom Watermarker v5 - Same-Band Pairs
-Pairs both bins within the same 4-12kHz band.
-Immune to frequency response bias from iPhone mic/TV speakers.
+SoundScan Custom Watermarker v6 - 4-8kHz Band
+Uses only 4-8kHz for encoding - confirmed reproducible by gaming/TV speakers.
+Both bins in each pair are within same band - immune to frequency bias.
 
-Band: 4kHz-12kHz (187 bins)
-Pairs: same-band (both bins within 4-12kHz)
+Band: 4kHz-8kHz (93 bins)
 Detection: 0.1 seconds from any point in loop
-Robust against: frequency bias, room noise, speaker rolloff, any offset
+Robust against: TV speaker rolloff, iPhone mic bias, room noise
 """
 import numpy as np
 from scipy.io import wavfile
@@ -19,7 +18,7 @@ SR       = 44100
 FRAME    = 1024
 BIN_FREQ = SR / FRAME  # 43.07Hz
 
-BAND_BINS = list(range(93, 280))   # 4,005Hz - 12,016Hz (187 bins)
+BAND_BINS = list(range(93, 186))   # 4,005Hz - 7,967Hz (93 bins)
 STRENGTH  = 0.75
 SEED      = 42
 
@@ -35,12 +34,12 @@ def bits_to_code(bits):
 
 
 def get_pairs():
-    """30 same-band pairs within 4-12kHz — immune to frequency bias"""
+    """30 same-band pairs within 4-8kHz"""
     rng = np.random.default_rng(SEED)
     bins = BAND_BINS.copy()
     rng.shuffle(bins)
     half = len(bins) // 2
-    return [(bins[i], bins[i + half]) for i in range(30)]
+    return [(bins[i], bins[i+half]) for i in range(30)]
 
 
 def embed(audio, code):
@@ -67,7 +66,7 @@ def embed(audio, code):
 
 
 def detect(audio):
-    """Each frame votes on all 30 bits — works from any start point"""
+    """Each frame votes on all 30 bits"""
     pairs = get_pairs()
     votes = np.zeros((30, 2))
     fs = 0
