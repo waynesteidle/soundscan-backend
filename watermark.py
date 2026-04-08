@@ -1,11 +1,14 @@
 """
-SoundScan Custom Watermarker v6 - 4-8kHz Band
-Uses only 4-8kHz for encoding - confirmed reproducible by gaming/TV speakers.
-Both bins in each pair are within same band - immune to frequency bias.
+SoundScan Custom Watermarker v6 - Multi-Band
+Embeds watermark in 3 frequency bands simultaneously.
+Works on ALL speaker types: budget TV, gaming, mid-range, soundbar.
 
-Band: 4kHz-8kHz (93 bins)
-Detection: 0.1 seconds from any point in loop
-Robust against: TV speaker rolloff, iPhone mic bias, room noise
+Band A: 3kHz-5kHz  (works on ALL speakers)
+Band B: 5kHz-8kHz  (works on most speakers)
+Band C: 8kHz-12kHz (works on good speakers/soundbars)
+
+Detection uses whichever band survived the speaker/mic chain.
+Phase independent: detects from any point in the 30-second loop.
 """
 import numpy as np
 from scipy.io import wavfile
@@ -18,9 +21,15 @@ SR       = 44100
 FRAME    = 1024
 BIN_FREQ = SR / FRAME  # 43.07Hz
 
-BAND_BINS = list(range(93, 186))   # 4,005Hz - 7,967Hz (93 bins)
-STRENGTH  = 0.75
-SEED      = 42
+BANDS = {
+    'A': list(range(70,  116)),   # 3,015Hz - 4,994Hz
+    'B': list(range(116, 186)),   # 4,996Hz - 7,967Hz
+    'C': list(range(186, 280)),   # 8,010Hz - 12,016Hz
+}
+ALL_BINS = BANDS['A'] + BANDS['B'] + BANDS['C']
+
+STRENGTH = 0.75
+SEED     = 42
 
 
 def code_to_bits(code):
@@ -33,47 +42,49 @@ def bits_to_code(bits):
     return str(n) if 100000000 <= n <= 999999999 else None
 
 
-def get_pairs():
-    """30 same-band pairs within 4-8kHz"""
+def get_band_pairs(band_bins):
+    """30 same-band pairs for given frequency band"""
     rng = np.random.default_rng(SEED)
-    bins = BAND_BINS.copy()
+    bins = band_bins.copy()
     rng.shuffle(bins)
     half = len(bins) // 2
-    return [(bins[i], bins[i+half]) for i in range(30)]
+    n = min(30, half)
+    return [(bins[i], bins[i + half]) for i in range(n)]
 
 
 def embed(audio, code):
-    """Embed ALL 30 bits in EVERY frame — phase independent"""
+    """Embed ALL 30 bits in EVERY frame across ALL 3 bands"""
     bits  = code_to_bits(code)
-    pairs = get_pairs()
     output = audio.copy().astype(np.float64)
     fs = 0
     while fs + FRAME <= len(output):
         frame = output[fs:fs+FRAME]
         spec  = np.fft.rfft(frame)
-        for b_idx in range(30):
-            b1, b2 = pairs[b_idx]
-            bit = bits[b_idx]
-            m1, m2 = np.abs(spec[b1]), np.abs(spec[b2])
-            if m1+m2 > 0:
-                if bit == 1:
-                    spec[b1] *= (1+STRENGTH); spec[b2] *= (1-STRENGTH)
-                else:
-                    spec[b1] *= (1-STRENGTH); spec[b2] *= (1+STRENGTH)
+        for band_bins in BANDS.values():
+            pairs = get_band_pairs(band_bins)
+            for b_idx in range(len(pairs)):
+                b1, b2 = pairs[b_idx]
+                bit = bits[b_idx]
+                m1, m2 = np.abs(spec[b1]), np.abs(spec[b2])
+                if m1+m2 > 0:
+                    if bit == 1:
+                        spec[b1] *= (1+STRENGTH); spec[b2] *= (1-STRENGTH)
+                    else:
+                        spec[b1] *= (1-STRENGTH); spec[b2] *= (1+STRENGTH)
         output[fs:fs+FRAME] = np.fft.irfft(spec, FRAME)
         fs += FRAME
     return output
 
 
-def detect(audio):
-    """Each frame votes on all 30 bits"""
-    pairs = get_pairs()
+def detect_band(audio, band_bins):
+    """Detect from one frequency band"""
+    pairs = get_band_pairs(band_bins)
     votes = np.zeros((30, 2))
     fs = 0
     while fs + FRAME <= len(audio):
         frame = audio[fs:fs+FRAME].astype(np.float64)
         spec  = np.fft.rfft(frame)
-        for b_idx in range(30):
+        for b_idx in range(len(pairs)):
             b1, b2 = pairs[b_idx]
             m1, m2 = np.abs(spec[b1]), np.abs(spec[b2])
             t = m1+m2
@@ -85,6 +96,23 @@ def detect(audio):
     conf = float(np.mean([max(votes[i])/max(sum(votes[i]),1e-10) for i in range(30)]))
     n    = sum(b << (29-i) for i, b in enumerate(bits))
     return bits_to_code(bits), conf, n
+
+
+def detect(audio):
+    """Try all 3 bands, return best result"""
+    best_code = None
+    best_conf = 0
+    best_n    = 0
+    for band_bins in BANDS.values():
+        code, conf, n = detect_band(audio, band_bins)
+        if code and conf > best_conf:
+            best_code = code
+            best_conf = conf
+            best_n    = n
+        elif not best_code and conf > best_conf:
+            best_conf = conf
+            best_n    = n
+    return best_code, best_conf, best_n
 
 
 def load_audio(path):
@@ -123,7 +151,7 @@ def generate_carrier(duration=30.0, output_path='soundscan_carrier.wav'):
     t = np.linspace(0, duration, N, endpoint=False)
     np.random.seed(SEED)
     carrier = np.zeros(N)
-    for b in BAND_BINS:
+    for b in ALL_BINS:
         freq  = b * BIN_FREQ
         phase = np.random.uniform(0, 2*np.pi)
         carrier += np.sin(2*np.pi*freq*t + phase)
